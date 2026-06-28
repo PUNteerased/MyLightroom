@@ -1,0 +1,22 @@
+{
+  "id": "builtin-portrait",
+  "name": "Portrait Warm",
+  "category": "Built-in",
+  "settings": {
+    "basic": {
+      "temp": 5800,
+      "tint": 8,
+      "exposure": 0.15,
+      "contrast": -5,
+      "highlights": -25,
+      "shadows": 20,
+      "whites": 0,
+      "blacks": 5,
+      "texture": 10,
+      "clarity": -10,
+      "dehaze": 0,
+      "vibrance": 15,
+      "saturation": -5
+    }
+  }
+}

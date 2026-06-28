@@ -1,0 +1,6 @@
+# Develop compute shader (Vulkan/GLSL) — future GPU path
+# Current preview uses CPU DevelopPipeline; this shader documents the intended GPU stages.
+
+void main() {
+    // Stage order: WB -> exposure -> tone -> curve -> HSL -> grading -> LUT -> vignette
+}

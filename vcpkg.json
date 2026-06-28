@@ -1,0 +1,13 @@
+{
+  "name": "mylightroom",
+  "version": "0.1.0",
+  "description": "Lightroom Classic-like RAW editor with AI histogram matching",
+  "dependencies": [
+    {
+      "name": "qtbase",
+      "default-features": true,
+      "features": ["widgets", "opengl", "sql-sqlite"]
+    },
+    "libraw"
+  ]
+}

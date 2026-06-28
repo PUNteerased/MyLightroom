@@ -1,0 +1,127 @@
+{
+    "category": "Imported XMP",
+    "id": "d2cda288-8efd-4a0a-b85f-90cf0e30438a",
+    "lut_settings": {
+        "enabled": false,
+        "intensity": 1,
+        "path": ""
+    },
+    "name": "TORBOSHI2",
+    "settings": {
+        "basic": {
+            "blacks": 30,
+            "clarity": -10,
+            "contrast": -10,
+            "dehaze": 0,
+            "exposure": 0.699999988079071,
+            "highlights": -60,
+            "saturation": 0,
+            "shadows": 30,
+            "temp": 4700,
+            "texture": -10,
+            "tint": 10,
+            "vibrance": 0,
+            "whites": -50
+        },
+        "color_grading": {
+            "balance": 0,
+            "blending": 100,
+            "highlights": {
+                "h": 234,
+                "l": 0,
+                "s": 0
+            },
+            "midtones": {
+                "h": 0,
+                "l": 0,
+                "s": 0
+            },
+            "shadows": {
+                "h": 66,
+                "l": 0,
+                "s": 10
+            }
+        },
+        "detail": {
+            "noise_luminance": 35,
+            "sharpen_amount": 45
+        },
+        "effects": {
+            "grain_amount": 0,
+            "vignette_amount": 0
+        },
+        "geometry": {
+            "aspect_ratio": "free",
+            "crop_bottom": 1,
+            "crop_left": 0,
+            "crop_right": 1,
+            "crop_top": 0,
+            "rotation": 0,
+            "straighten": 0
+        },
+        "hsl": {
+            "aqua": {
+                "h": 0,
+                "l": 0,
+                "s": 0
+            },
+            "blue": {
+                "h": 0,
+                "l": 0,
+                "s": 0
+            },
+            "green": {
+                "h": 0,
+                "l": 13,
+                "s": -27
+            },
+            "magenta": {
+                "h": 0,
+                "l": 0,
+                "s": 0
+            },
+            "orange": {
+                "h": 0,
+                "l": 15,
+                "s": 0
+            },
+            "purple": {
+                "h": 0,
+                "l": 0,
+                "s": 0
+            },
+            "red": {
+                "h": 0,
+                "l": 0,
+                "s": 20
+            },
+            "yellow": {
+                "h": 0,
+                "l": -7,
+                "s": 0
+            }
+        },
+        "lut": {
+            "enabled": false,
+            "intensity": 1,
+            "path": ""
+        },
+        "tone_curve": {
+            "darks": 10,
+            "highlights": 0,
+            "lights": 10,
+            "mode": "point",
+            "points": [
+                [
+                    0,
+                    0
+                ],
+                [
+                    255,
+                    255
+                ]
+            ],
+            "shadows": 0
+        }
+    }
+}

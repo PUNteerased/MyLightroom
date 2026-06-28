@@ -1,7 +1,6 @@
 #include "DevelopPipeline.hpp"
 #include "../color/CameraProfile.hpp"
-#include <cmath>
-#include <cstring>
+#include "../core/LinearRgb64.hpp"
 #include "../lut/LutEngine.hpp"
 #include <QDebug>
 #include <QTransform>
@@ -599,11 +598,8 @@ QImage DevelopPipeline::renderLinear(const QImage& linear64, const DevelopSettin
     QImage work = applyCropRotate(linear64, settings.geometry);
     if (work.format() != QImage::Format_RGBX64)
         work = work.convertToFormat(QImage::Format_RGBX64);
-    if (maxEdge > 0 && (work.width() > maxEdge || work.height() > maxEdge)) {
-        const float s = static_cast<float>(maxEdge) / static_cast<float>(qMax(work.width(), work.height()));
-        work = work.scaled(static_cast<int>(work.width() * s), static_cast<int>(work.height() * s),
-                           Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-    }
+    if (maxEdge > 0 && (work.width() > maxEdge || work.height() > maxEdge))
+        work = scaleLinearRgb64(work, maxEdge);
 
     const int w = work.width(), h = work.height();
     std::vector<float> buf(static_cast<size_t>(w) * h * 3);
@@ -642,7 +638,7 @@ QImage DevelopPipeline::renderLinear(const QImage& linear64, const DevelopSettin
                 const size_t o = (static_cast<size_t>(y) * w + x) * 3;
                 float r = buf[o], g = buf[o + 1], b = buf[o + 2];
                 applyWhiteBalanceLinear(r, g, b, wb, basic.temp, basic.tint);
-                CameraProfile::applyLinear(r, g, b, effectiveRgbCam);
+                CameraProfile::applyLinearPreservingLuminance(r, g, b, effectiveRgbCam);
                 r = std::max(0.f, r);
                 g = std::max(0.f, g);
                 b = std::max(0.f, b);

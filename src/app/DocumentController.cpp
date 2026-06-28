@@ -2,6 +2,7 @@
 #include "../ai/AutoAdjust.hpp"
 #include "../ai/FeatureExtractor.hpp"
 #include "../ai/SceneClassifier.hpp"
+#include "../core/LinearRgb64.hpp"
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -15,7 +16,7 @@ namespace mylr {
 
 DocumentController::DocumentController(QObject* parent) : QObject(parent) {
     const QString cacheRoot = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-    const QString cache = QDir(cacheRoot).filePath(QStringLiteral("cache_v99_forced"));
+    const QString cache = QDir(cacheRoot).filePath(QStringLiteral("cache_v101_linear_fix"));
     QDir().mkpath(cache);
     m_catalog.setCachePath(cache);
     m_thumbCache.setDirectory(QDir(cache).filePath(QStringLiteral("thumbnails")));
@@ -159,8 +160,7 @@ bool DocumentController::loadImage(int index) {
     }
 
     // Downscaled LINEAR source (RGBX64) for fast feedback while dragging sliders.
-    m_interactiveSource = m_raw.linearRgb.scaled(1024, 1024, Qt::KeepAspectRatio,
-                                                 Qt::SmoothTransformation);
+    m_interactiveSource = scaleLinearRgb64(m_raw.linearRgb, 1024);
 
     // Populate technical metadata now that the file is decoded (cheap, per-view).
     m_catalog.updateMetadata(path, m_raw.metadata.width, m_raw.metadata.height,

@@ -1,5 +1,6 @@
 #include "RawDecoder.hpp"
 #include "../color/CameraProfile.hpp"
+#include "../core/LinearRgb64.hpp"
 #include <QDebug>
 #include <QFileInfo>
 #include <QTransform>
@@ -64,20 +65,18 @@ void fillWbCoeffsFromLibRaw(RawMetadata& metadata, const float mul[4], LibRaw& r
 }
 
 void fillRgbCamFromLibRaw(RawMetadata& metadata, LibRaw& raw) {
-    const float (*src)[4] = raw.imgdata.color.rgb_cam;
+    const float (*rgbSrc)[4] = raw.imgdata.color.rgb_cam;
     qDebug() << "RawDecoder rgb_cam raw:"
-             << src[0][0] << src[0][1] << src[0][2]
-             << src[1][0] << src[1][1] << src[1][2]
-             << src[2][0] << src[2][1] << src[2][2];
+             << rgbSrc[0][0] << rgbSrc[0][1] << rgbSrc[0][2]
+             << rgbSrc[1][0] << rgbSrc[1][1] << rgbSrc[1][2]
+             << rgbSrc[2][0] << rgbSrc[2][1] << rgbSrc[2][2];
 
     const CameraProfile profile = CameraProfile::fromLibRaw(raw.imgdata.color.rgb_cam);
-    float resolved[9];
-    CameraProfile::resolveForRender(profile.matrix, resolved);
     for (int i = 0; i < 9; ++i)
-        metadata.rgbCam[i] = resolved[i];
+        metadata.rgbCam[i] = profile.matrix[i];
 
-    qDebug() << "RawDecoder rgbCam stored (sum=" << CameraProfile::matrixSum(metadata.rgbCam) << "):"
-             << metadata.rgbCam[0] << metadata.rgbCam[1] << metadata.rgbCam[2]
+    qDebug() << "RawDecoder rgbCam camera->sRGB (sum=" << CameraProfile::matrixSum(metadata.rgbCam)
+             << "):" << metadata.rgbCam[0] << metadata.rgbCam[1] << metadata.rgbCam[2]
              << metadata.rgbCam[3] << metadata.rgbCam[4] << metadata.rgbCam[5]
              << metadata.rgbCam[6] << metadata.rgbCam[7] << metadata.rgbCam[8];
 }
@@ -109,15 +108,15 @@ int openLibRawFile(LibRaw& raw, const QString& path) {
 }
 
 void configureLibRawOutput(LibRaw& raw) {
-    // Camera-native linear RGB; rgb_cam applied in DevelopPipeline (not at decode).
+    // Pure camera-linear output: no WB, no rgb_cam, no gamma at decode.
     raw.imgdata.params.output_color = 0;
     raw.imgdata.params.output_bps = 16;
     raw.imgdata.params.gamm[0] = 1.0;
     raw.imgdata.params.gamm[1] = 1.0;
     raw.imgdata.params.no_auto_bright = 1;
+    raw.imgdata.params.no_auto_scale = 1;
     raw.imgdata.params.use_camera_wb = 0;
     raw.imgdata.params.use_auto_wb = 0;
-    raw.imgdata.params.no_auto_scale = 0;
     raw.imgdata.params.highlight = 0;
     raw.imgdata.params.user_qual = 3;
     for (int i = 0; i < 4; ++i)
@@ -176,15 +175,9 @@ QImage linear64FromLibRawImage(const libraw_processed_image_t* img) {
     return full;
 }
 
-// Scale a linear RGBX64 image to a maximum edge, preserving the 16-bit format.
+// Scale a linear RGBX64 image to a maximum edge (safe box filter, not Qt::scaled).
 QImage scaleLinear64(const QImage& img, int maxEdge) {
-    if (img.isNull() || maxEdge <= 0) return img;
-    if (img.width() <= maxEdge && img.height() <= maxEdge) return img;
-    const float scale = static_cast<float>(maxEdge) /
-                        static_cast<float>(qMax(img.width(), img.height()));
-    return img.scaled(static_cast<int>(img.width() * scale),
-                      static_cast<int>(img.height() * scale),
-                      Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    return scaleLinearRgb64(img, maxEdge);
 }
 
 // Produce an 8-bit sRGB display image from linear RGBX64: WB, camera profile, clamp, sRGB.
@@ -202,7 +195,7 @@ QImage previewFromLinear64(const QImage& lin, const float wb[4], const float rgb
             float r = src[x * 4 + 0] / 65535.f * wr;
             float g = src[x * 4 + 1] / 65535.f * wg;
             float b = src[x * 4 + 2] / 65535.f * wbb;
-            CameraProfile::applyLinear(r, g, b, rgbCam);
+            CameraProfile::applyLinearPreservingLuminance(r, g, b, rgbCam);
             r = std::max(0.f, r);
             g = std::max(0.f, g);
             b = std::max(0.f, b);

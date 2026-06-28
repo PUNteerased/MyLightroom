@@ -11,14 +11,8 @@ constexpr float kLumR = 0.2126729f;
 constexpr float kLumG = 0.7151522f;
 constexpr float kLumB = 0.0721750f;
 
-// Typical Canon EOS rgb_cam (LibRaw/dcraw family), row-major 3x3.
-constexpr float kFallbackCanonRaw[9] = {
-    1.591339f, -0.541382f, -0.049957f,
-   -0.330010f,  1.158831f,  0.171182f,
-   -0.079912f,  0.178249f,  0.901663f,
-};
-
 void normalizeLuminancePreserving(float m[9]) {
+    // Neutral camera input (1,1,1) should map to unit Rec.709 luminance.
     const float outR = m[0] + m[1] + m[2];
     const float outG = m[3] + m[4] + m[5];
     const float outB = m[6] + m[7] + m[8];
@@ -29,17 +23,24 @@ void normalizeLuminancePreserving(float m[9]) {
         m[i] *= scale;
 }
 
+void normalizeRowWeights(float m[9]) {
+    // Prevent any output row from acting as a massive gain multiplier.
+    for (int row = 0; row < 3; ++row) {
+        float rowSum = 0.f;
+        for (int col = 0; col < 3; ++col)
+            rowSum += std::fabs(m[row * 3 + col]);
+        if (rowSum > 3.f) {
+            const float s = 3.f / rowSum;
+            for (int col = 0; col < 3; ++col)
+                m[row * 3 + col] *= s;
+        }
+    }
+}
+
 } // namespace
 
 CameraProfile CameraProfile::identity() {
     return CameraProfile{};
-}
-
-CameraProfile CameraProfile::fallbackCanon() {
-    CameraProfile p;
-    std::memcpy(p.matrix, kFallbackCanonRaw, sizeof(p.matrix));
-    normalizeLuminancePreserving(p.matrix);
-    return p;
 }
 
 float CameraProfile::matrixSum(const float matrix[9]) {
@@ -56,48 +57,37 @@ bool CameraProfile::isNearZero(const float matrix[9]) {
     return sumAbs < 1e-6f;
 }
 
-bool CameraProfile::isIdentity(const float matrix[9]) {
-    static const float kId[9] = {1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f};
-    for (int i = 0; i < 9; ++i) {
-        if (std::fabs(matrix[i] - kId[i]) > 1e-3f)
-            return false;
-    }
-    return true;
-}
-
 void CameraProfile::resolveForRender(const float matrix[9], float resolved[9]) {
-    const float sum = matrixSum(matrix);
-    if (isNearZero(matrix) || std::fabs(sum) < 1e-6f) {
-        qWarning() << "DevelopPipeline: camera matrix sum is" << sum
-                   << "— forcing Canon EOS fallback (not identity/no-op)";
-        const CameraProfile fb = fallbackCanon();
-        std::memcpy(resolved, fb.matrix, sizeof(fb.matrix));
-        return;
-    }
-    if (isIdentity(matrix)) {
-        qWarning() << "DevelopPipeline: camera matrix is identity (unset?) — forcing Canon EOS fallback";
-        const CameraProfile fb = fallbackCanon();
-        std::memcpy(resolved, fb.matrix, sizeof(fb.matrix));
+    if (isNearZero(matrix)) {
+        qWarning() << "DevelopPipeline: camera matrix unset — identity";
+        const CameraProfile id = identity();
+        std::memcpy(resolved, id.matrix, sizeof(id.matrix));
         return;
     }
     std::memcpy(resolved, matrix, 9 * sizeof(float));
 }
 
 CameraProfile CameraProfile::fromLibRaw(const float rgb_cam[3][4]) {
-    CameraProfile p;
-    for (int row = 0; row < 3; ++row)
-        for (int col = 0; col < 3; ++col)
-            p.matrix[row * 3 + col] = rgb_cam[row][col];
-
-    const float sum = matrixSum(p.matrix);
-    if (isNearZero(p.matrix) || std::fabs(sum) < 1e-6f) {
-        qWarning() << "RawDecoder: LibRaw rgb_cam sum is" << sum
-                   << "— using Canon EOS fallback matrix";
-        return fallbackCanon();
+    CameraProfile profile;
+    float sumAbs = 0.f;
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 3; ++col) {
+            profile.matrix[row * 3 + col] = rgb_cam[row][col];
+            sumAbs += std::fabs(profile.matrix[row * 3 + col]);
+        }
+    }
+    if (sumAbs < 1e-6f) {
+        qWarning() << "RawDecoder: rgb_cam is zero — identity matrix";
+        return identity();
     }
 
-    normalizeLuminancePreserving(p.matrix);
-    return p;
+    normalizeRowWeights(profile.matrix);
+    normalizeLuminancePreserving(profile.matrix);
+    qDebug() << "CameraProfile: forward rgb_cam camera->sRGB, row sums:"
+             << (profile.matrix[0] + profile.matrix[1] + profile.matrix[2])
+             << (profile.matrix[3] + profile.matrix[4] + profile.matrix[5])
+             << (profile.matrix[6] + profile.matrix[7] + profile.matrix[8]);
+    return profile;
 }
 
 void CameraProfile::applyLinear(float& r, float& g, float& b, const float matrix[9]) {
@@ -107,6 +97,19 @@ void CameraProfile::applyLinear(float& r, float& g, float& b, const float matrix
     r = nr;
     g = ng;
     b = nb;
+}
+
+void CameraProfile::applyLinearPreservingLuminance(float& r, float& g, float& b,
+                                                   const float matrix[9]) {
+    const float oldLum = kLumR * r + kLumG * g + kLumB * b;
+    applyLinear(r, g, b, matrix);
+    const float newLum = kLumR * r + kLumG * g + kLumB * b;
+    if (oldLum > 1e-5f && newLum > 1e-5f) {
+        const float s = oldLum / newLum;
+        r *= s;
+        g *= s;
+        b *= s;
+    }
 }
 
 } // namespace mylr

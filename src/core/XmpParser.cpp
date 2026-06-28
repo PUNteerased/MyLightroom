@@ -111,6 +111,15 @@ void XmpParser::applyAttribute(const QString& keyRaw, const QString& value, Deve
     } else if (key == QStringLiteral("ParametricShadows")) {
         s.toneCurve.shadows = v;
         report.mappedFields.append(key);
+    } else if (key == QStringLiteral("ParametricShadowSplit")) {
+        s.toneCurve.shadowSplit = v;
+        report.mappedFields.append(key);
+    } else if (key == QStringLiteral("ParametricMidtoneSplit")) {
+        s.toneCurve.midtoneSplit = v;
+        report.mappedFields.append(key);
+    } else if (key == QStringLiteral("ParametricHighlightSplit")) {
+        s.toneCurve.highlightSplit = v;
+        report.mappedFields.append(key);
     } else if (key.startsWith(QStringLiteral("ToneCurvePV2012")) ||
                key.startsWith(QStringLiteral("ToneCurve"))) {
         if (!value.isEmpty() && value != QStringLiteral("0,0,255,255")) {
@@ -250,6 +259,10 @@ void XmpParser::applyAttribute(const QString& keyRaw, const QString& value, Deve
         report.skippedFields.append(key);
         report.warnings.append(
             QStringLiteral("Embedded LookTable/RGBTable not converted — use external .cube/.3dl LUT"));
+    } else if (key == QStringLiteral("ProcessVersion")) {
+        report.warnings.append(
+            QStringLiteral("ProcessVersion %1 noted — MyLightroom uses internal PV2012-style pipeline")
+                .arg(value));
     }
 }
 
@@ -266,6 +279,16 @@ XmpImportReport XmpParser::parseContent(const QString& content, DevelopSettings&
 
     for (auto it = attrs.constBegin(); it != attrs.constEnd(); ++it)
         applyAttribute(it.key(), it.value(), out, report);
+
+    // Prefer parametric curve when XMP carries Parametric* fields but only an
+    // identity point curve (common in Lightroom exports).
+    const bool hasParametric = out.toneCurve.darks != 0.f || out.toneCurve.lights != 0.f ||
+                               out.toneCurve.highlights != 0.f || out.toneCurve.shadows != 0.f;
+    const bool identityPoint =
+        out.toneCurve.points.size() == 2 && out.toneCurve.points[0] == QPointF(0, 0) &&
+        out.toneCurve.points[1] == QPointF(255, 255);
+    if (hasParametric && identityPoint)
+        out.toneCurve.mode = ToneCurveSettings::Mode::Parametric;
 
     if (report.lookAmount > 0.f && report.lookAmount <= 1.f) {
         out.lut.intensity = report.lookAmount;

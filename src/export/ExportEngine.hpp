@@ -25,7 +25,9 @@ public:
     // (as-shot cam_mul) must be supplied; or an 8-bit sRGB image (wbCoeffs null).
     bool exportImage(const QImage& source, const DevelopSettings& develop,
                      const ExportSettings& settings, const QString& outputPath,
-                     const float wbCoeffs[4] = nullptr) const;
+                     const float wbCoeffs[4] = nullptr,
+                     const float rgbCam[9] = nullptr,
+                     bool isCameraLinear = true) const;
     bool exportBatch(const QVector<QPair<QImage, QString>>& items,
                      const DevelopSettings& develop, const ExportSettings& settings) const;
 

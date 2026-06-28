@@ -1,4 +1,6 @@
 #include "RawDecoder.hpp"
+#include "../color/CameraProfile.hpp"
+#include <QDebug>
 #include <QFileInfo>
 #include <QTransform>
 #include <QtMath>
@@ -40,6 +42,46 @@ QImage scaleToMaxEdge(const QImage& img, int maxEdge) {
 }
 
 #if defined(MYLR_HAS_LIBRAW) && MYLR_HAS_LIBRAW
+void fillWbCoeffsFromLibRaw(RawMetadata& metadata, const float mul[4], LibRaw& raw) {
+    float src[4];
+    bool validMul = false;
+    for (int i = 0; i < 4; ++i) {
+        if (mul[i] > 0.05f) {
+            validMul = true;
+            break;
+        }
+    }
+    if (validMul) {
+        for (int i = 0; i < 4; ++i)
+            src[i] = mul[i];
+    } else {
+        for (int i = 0; i < 4; ++i)
+            src[i] = raw.imgdata.color.pre_mul[i];
+    }
+    const float gMul = qMax(1.f, src[1]);
+    for (int i = 0; i < 4; ++i)
+        metadata.wbCoeffs[i] = src[i] / gMul;
+}
+
+void fillRgbCamFromLibRaw(RawMetadata& metadata, LibRaw& raw) {
+    const float (*src)[4] = raw.imgdata.color.rgb_cam;
+    qDebug() << "RawDecoder rgb_cam raw:"
+             << src[0][0] << src[0][1] << src[0][2]
+             << src[1][0] << src[1][1] << src[1][2]
+             << src[2][0] << src[2][1] << src[2][2];
+
+    const CameraProfile profile = CameraProfile::fromLibRaw(raw.imgdata.color.rgb_cam);
+    float resolved[9];
+    CameraProfile::resolveForRender(profile.matrix, resolved);
+    for (int i = 0; i < 9; ++i)
+        metadata.rgbCam[i] = resolved[i];
+
+    qDebug() << "RawDecoder rgbCam stored (sum=" << CameraProfile::matrixSum(metadata.rgbCam) << "):"
+             << metadata.rgbCam[0] << metadata.rgbCam[1] << metadata.rgbCam[2]
+             << metadata.rgbCam[3] << metadata.rgbCam[4] << metadata.rgbCam[5]
+             << metadata.rgbCam[6] << metadata.rgbCam[7] << metadata.rgbCam[8];
+}
+
 void fillMetadataFromLibRaw(RawMetadata& metadata, LibRaw& raw) {
     metadata.width = raw.imgdata.sizes.iwidth;
     metadata.height = raw.imgdata.sizes.iheight;
@@ -55,13 +97,7 @@ void fillMetadataFromLibRaw(RawMetadata& metadata, LibRaw& raw) {
         metadata.evBaseline = std::log2((metadata.aperture * metadata.aperture) /
                                         metadata.shutterSec * 100.f / qMax(1, metadata.iso));
     }
-    // LibRaw applies the as-shot WB (cam_mul) during decode, so the linear buffer
-    // is already neutral; the pipeline WB stage must therefore stay at unity
-    // (Temp/Tint then act as relative offsets from the as-shot baseline).
-    metadata.wbCoeffs[0] = 1.f;
-    metadata.wbCoeffs[1] = 1.f;
-    metadata.wbCoeffs[2] = 1.f;
-    metadata.wbCoeffs[3] = 1.f;
+    fillWbCoeffsFromLibRaw(metadata, raw.imgdata.color.cam_mul, raw);
 }
 
 int openLibRawFile(LibRaw& raw, const QString& path) {
@@ -73,20 +109,19 @@ int openLibRawFile(LibRaw& raw, const QString& path) {
 }
 
 void configureLibRawOutput(LibRaw& raw) {
-    raw.imgdata.params.output_color = 1;  // sRGB primaries
-    raw.imgdata.params.output_bps = 16;   // high-bit so the float pipeline has headroom
-    // Decode to LINEAR light (gamma 1.0, no auto-brighten) but let LibRaw apply
-    // the as-shot camera white balance (cam_mul) in camera-native space. This is
-    // both correct and robust: the linear buffer is already neutral, so the
-    // pipeline's WB stage stays at unity and Temp/Tint act as relative offsets.
-    raw.imgdata.params.gamm[0] = 1.0;     // linear gamma (power)
-    raw.imgdata.params.gamm[1] = 1.0;     // linear toe slope
-    raw.imgdata.params.no_auto_bright = 1;  // never auto-stretch; keep exposure predictable
-    raw.imgdata.params.use_camera_wb = 1;   // as-shot WB from cam_mul
+    // Camera-native linear RGB; rgb_cam applied in DevelopPipeline (not at decode).
+    raw.imgdata.params.output_color = 0;
+    raw.imgdata.params.output_bps = 16;
+    raw.imgdata.params.gamm[0] = 1.0;
+    raw.imgdata.params.gamm[1] = 1.0;
+    raw.imgdata.params.no_auto_bright = 1;
+    raw.imgdata.params.use_camera_wb = 0;
     raw.imgdata.params.use_auto_wb = 0;
     raw.imgdata.params.no_auto_scale = 0;
-    raw.imgdata.params.highlight = 0;     // keep highlights (clip to white level)
-    raw.imgdata.params.user_qual = 3;     // AHD demosaic
+    raw.imgdata.params.highlight = 0;
+    raw.imgdata.params.user_qual = 3;
+    for (int i = 0; i < 4; ++i)
+        raw.imgdata.params.user_mul[i] = 1.0;
 }
 
 // sRGB transfer functions (kept local so the decoder does not depend on the
@@ -152,9 +187,8 @@ QImage scaleLinear64(const QImage& img, int maxEdge) {
                       Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
 }
 
-// Produce an 8-bit sRGB display image from linear RGBX64 for UI thumbnails and
-// the AI feature/baseline path: apply as-shot WB (normalized to green) then sRGB.
-QImage previewFromLinear64(const QImage& lin, const float wb[4]) {
+// Produce an 8-bit sRGB display image from linear RGBX64: WB, camera profile, clamp, sRGB.
+QImage previewFromLinear64(const QImage& lin, const float wb[4], const float rgbCam[9]) {
     if (lin.isNull()) return {};
     const int w = lin.width(), h = lin.height();
     QImage out(w, h, QImage::Format_RGB888);
@@ -165,9 +199,13 @@ QImage previewFromLinear64(const QImage& lin, const float wb[4]) {
         const auto* src = reinterpret_cast<const quint16*>(lin.constScanLine(y));
         auto* dst = out.scanLine(y);
         for (int x = 0; x < w; ++x) {
-            const float r = src[x * 4 + 0] / 65535.f * wr;
-            const float g = src[x * 4 + 1] / 65535.f * wg;
-            const float b = src[x * 4 + 2] / 65535.f * wbb;
+            float r = src[x * 4 + 0] / 65535.f * wr;
+            float g = src[x * 4 + 1] / 65535.f * wg;
+            float b = src[x * 4 + 2] / 65535.f * wbb;
+            CameraProfile::applyLinear(r, g, b, rgbCam);
+            r = std::max(0.f, r);
+            g = std::max(0.f, g);
+            b = std::max(0.f, b);
             dst[x * 3 + 0] = static_cast<unsigned char>(linToSrgb(r) * 255.f + 0.5f);
             dst[x * 3 + 1] = static_cast<unsigned char>(linToSrgb(g) * 255.f + 0.5f);
             dst[x * 3 + 2] = static_cast<unsigned char>(linToSrgb(b) * 255.f + 0.5f);
@@ -263,10 +301,19 @@ RawImage RawDecoder::decodeWithLibRaw(const QString& path, int maxEdge) const {
     if (openLibRawFile(raw, path) != LIBRAW_SUCCESS)
         return result;
 
+    if (raw.unpack() != LIBRAW_SUCCESS)
+        return result;
+
     fillMetadataFromLibRaw(result.metadata, raw);
 
-    QImage linearFull;  // Format_RGBX64, scene-referred linear
-    if (raw.unpack() == LIBRAW_SUCCESS && raw.dcraw_process() == LIBRAW_SUCCESS) {
+    QImage linearFull;
+    if (raw.dcraw_process() == LIBRAW_SUCCESS) {
+        // cam_mul and rgb_cam are finalized during dcraw_process on most bodies.
+        fillWbCoeffsFromLibRaw(result.metadata, raw.imgdata.color.cam_mul, raw);
+        fillRgbCamFromLibRaw(result.metadata, raw);
+        qDebug() << "RawDecoder wbCoeffs:"
+                 << result.metadata.wbCoeffs[0] << result.metadata.wbCoeffs[1]
+                 << result.metadata.wbCoeffs[2] << result.metadata.wbCoeffs[3];
         libraw_processed_image_t* img = raw.dcraw_make_mem_image();
         if (img) {
             linearFull = linear64FromLibRawImage(img);
@@ -278,8 +325,15 @@ RawImage RawDecoder::decodeWithLibRaw(const QString& path, int maxEdge) const {
     // the rest of the engine has a uniform linear source.
     if (linearFull.isNull()) {
         const QImage thumb = embeddedLibRawThumbnail(raw, maxEdge);
-        if (!thumb.isNull())
+        if (!thumb.isNull()) {
+            qWarning() << "RawDecoder: using embedded JPEG fallback — skipping camera matrix in pipeline";
             linearFull = srgb8ToLinear64(thumb);
+            result.metadata.isCameraLinear = false;
+            static const float kUnityWb[4] = {1.f, 1.f, 1.f, 1.f};
+            static const float kIdentityCam[9] = {1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f};
+            for (int i = 0; i < 4; ++i) result.metadata.wbCoeffs[i] = kUnityWb[i];
+            for (int i = 0; i < 9; ++i) result.metadata.rgbCam[i] = kIdentityCam[i];
+        }
     }
 
     if (linearFull.isNull())
@@ -288,7 +342,8 @@ RawImage RawDecoder::decodeWithLibRaw(const QString& path, int maxEdge) const {
     result.linearRgb = scaleLinear64(linearFull, maxEdge);
     result.metadata.width = result.linearRgb.width();
     result.metadata.height = result.linearRgb.height();
-    result.preview = previewFromLinear64(result.linearRgb, result.metadata.wbCoeffs);
+    result.preview = previewFromLinear64(result.linearRgb, result.metadata.wbCoeffs,
+                                         result.metadata.rgbCam);
     result.valid = true;
     return result;
 }
@@ -312,6 +367,7 @@ RawImage RawDecoder::decodeFallback(const QString& path, int maxEdge) const {
     const QImage scaled = scaleToMaxEdge(img, maxEdge);
     result.preview = scaled;
     result.linearRgb = srgb8ToLinear64(scaled);
+    result.metadata.isCameraLinear = false;
     result.valid = true;
     return result;
 }

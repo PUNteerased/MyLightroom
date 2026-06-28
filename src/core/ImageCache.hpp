@@ -1,6 +1,8 @@
 #pragma once
 
+#include "../color/CameraProfile.hpp"
 #include "../raw/RawDecoder.hpp"
+#include <QFileInfo>
 #include <QHash>
 #include <QList>
 #include <QString>
@@ -14,6 +16,15 @@ class ImageCache {
 public:
     explicit ImageCache(int maxCount = 20, qint64 maxBytes = 4LL * 1024 * 1024 * 1024)
         : m_maxCount(maxCount), m_maxBytes(maxBytes) {}
+
+    // Includes decode-version so pipeline/decode changes invalidate stale entries.
+    static QString cacheKey(const QString& path) {
+        const QFileInfo fi(path);
+        return QString::fromLatin1(kPipelineCacheGeneration) + QLatin1Char('|') +
+               fi.absoluteFilePath() + QLatin1Char('|') +
+               QString::number(fi.size()) + QLatin1Char('|') +
+               QString::number(fi.lastModified().toMSecsSinceEpoch());
+    }
 
     bool get(const QString& key, RawImage& out) {
         auto it = m_map.find(key);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../color/CameraProfile.hpp"
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFileInfo>
@@ -40,7 +41,8 @@ private:
         const QFileInfo fi(imagePath);
         // Version tag in the seed lets us invalidate the whole cache when the
         // thumbnail pipeline changes (e.g. v2 added EXIF orientation handling).
-        const QString seed = QStringLiteral("v3|") + fi.absoluteFilePath() + QLatin1Char('|') +
+        const QString seed = QString::fromLatin1(kPipelineCacheGeneration) + QLatin1Char('|') +
+                             fi.absoluteFilePath() + QLatin1Char('|') +
                              QString::number(fi.size()) + QLatin1Char('|') +
                              QString::number(fi.lastModified().toMSecsSinceEpoch());
         const QString hash = QString::fromLatin1(

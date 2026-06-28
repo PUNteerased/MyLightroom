@@ -108,9 +108,11 @@
         },
         "tone_curve": {
             "darks": 20,
+            "highlight_split": 75,
             "highlights": 0,
             "lights": 10,
-            "mode": "point",
+            "midtone_split": 50,
+            "mode": "parametric",
             "points": [
                 [
                     0,
@@ -121,6 +123,7 @@
                     255
                 ]
             ],
+            "shadow_split": 25,
             "shadows": 0
         }
     }

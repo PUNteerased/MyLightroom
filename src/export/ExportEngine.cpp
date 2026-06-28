@@ -52,12 +52,15 @@ QImage ExportEngine::applySharpen(const QImage& img, const DetailSettings& detai
 
 bool ExportEngine::exportImage(const QImage& source, const DevelopSettings& develop,
                                const ExportSettings& settings, const QString& outputPath,
-                               const float wbCoeffs[4]) const {
-    const float neutral[4] = {1.f, 1.f, 1.f, 1.f};
+                               const float wbCoeffs[4], const float rgbCam[9],
+                               bool isCameraLinear) const {
+    const float neutralWb[4] = {1.f, 1.f, 1.f, 1.f};
+    static const float kIdentityRgbCam[9] = {1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f};
     QImage rendered = source.format() == QImage::Format_RGBX64
                           ? m_pipeline.renderLinear(source, develop,
-                                                    wbCoeffs ? wbCoeffs : neutral,
-                                                    settings.maxLongEdge)
+                                                    wbCoeffs ? wbCoeffs : neutralWb,
+                                                    rgbCam ? rgbCam : kIdentityRgbCam,
+                                                    settings.maxLongEdge, isCameraLinear)
                           : m_pipeline.render(source, develop, settings.maxLongEdge);
     if (rendered.isNull()) return false;
 

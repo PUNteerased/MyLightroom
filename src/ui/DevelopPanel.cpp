@@ -28,20 +28,15 @@
 namespace mylr {
 
 namespace {
-// 3-column grid: label | gradient slider (stretch) | value field (fixed).
-// Reserving a fixed value column guarantees the numbers are never clipped on
-// the narrow right panel.
-QGridLayout* makeForm(QWidget* host) {
-    auto* grid = new QGridLayout(host);
-    grid->setContentsMargins(0, 0, 0, 0);
-    grid->setHorizontalSpacing(6);
-    grid->setVerticalSpacing(4);
-    grid->setColumnStretch(0, 0);
-    grid->setColumnStretch(1, 1);
-    grid->setColumnStretch(2, 0);
-    grid->setColumnMinimumWidth(0, 56);
-    grid->setColumnMinimumWidth(2, 46);
-    return grid;
+// Vertical stack of slider rows: [label | gradient slider | value field].
+// Each row is an HBoxLayout so the value column cannot be clipped by a narrow grid.
+QVBoxLayout* makeForm(QWidget* host, int labelWidth = 38) {
+    host->setMinimumWidth(292);
+    auto* col = new QVBoxLayout(host);
+    col->setContentsMargins(0, 0, 0, 0);
+    col->setSpacing(4);
+    col->setProperty("mylrLabelWidth", labelWidth);
+    return col;
 }
 
 // Slider that resets to its default value on double-click (Lightroom behaviour).
@@ -69,7 +64,7 @@ public:
         setButtonSymbols(QAbstractSpinBox::NoButtons);
         setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         setStyleSheet(QStringLiteral(
-            "QDoubleSpinBox{color:#d8d8d8;background:transparent;border:none;"
+            "QDoubleSpinBox{color:#d8d8d8;background:#2b2b2b;border:none;"
             "padding:0 2px;font-size:11px;selection-background-color:#4a6fa5;}"
             "QDoubleSpinBox:focus{background:#3a3a3a;border:1px solid #5a5a5a;border-radius:2px;}"
             "QDoubleSpinBox:disabled{color:#888888;}"));
@@ -89,7 +84,7 @@ public:
             sample = QString::number(static_cast<int>(qMax(qAbs(min), qAbs(max))));
         }
         const QFontMetrics fm(font());
-        setFixedWidth(fm.horizontalAdvance(sample) + 12);
+        setFixedWidth(qMax(56, fm.horizontalAdvance(sample) + 14));
     }
 
 protected:
@@ -177,6 +172,7 @@ DevelopPanel::DevelopPanel(EditGraph* graph, QWidget* parent)
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
     auto* container = new QWidget;
+    container->setMinimumWidth(296);
     auto* layout = new QVBoxLayout(container);
     layout->setContentsMargins(4, 4, 4, 4);
     layout->setSpacing(2);
@@ -212,7 +208,7 @@ void DevelopPanel::commit(const DevelopSettings& s, const QString& label) {
     m_graph->setSettings(s, label);
 }
 
-void DevelopPanel::bindFloat(QGridLayout* grid, const QString& label, float min, float max,
+void DevelopPanel::bindFloat(QVBoxLayout* col, const QString& label, float min, float max,
                              int decimals, float scale, Getter getter, Setter setter,
                              const QString& historyLabel, const QGradientStops& gradient,
                              float center) {
@@ -304,20 +300,27 @@ void DevelopPanel::bindFloat(QGridLayout* grid, const QString& label, float min,
         commitValue(defVal);
     };
 
-    const int r = grid->rowCount();
+    const int labelWidth = col->property("mylrLabelWidth").toInt();
     auto* lbl = new QLabel(label);
     lbl->setStyleSheet(QStringLiteral("color:#cfcfcf;"));
-    grid->addWidget(lbl, r, 0);
-    grid->addWidget(slider, r, 1);
-    grid->addWidget(spin, r, 2, Qt::AlignRight | Qt::AlignVCenter);
+    lbl->setFixedWidth(labelWidth > 0 ? labelWidth : 40);
+
+    auto* row = new QWidget(col->parentWidget());
+    auto* h = new QHBoxLayout(row);
+    h->setContentsMargins(0, 0, 0, 0);
+    h->setSpacing(4);
+    h->addWidget(lbl);
+    h->addWidget(slider, 1);
+    h->addWidget(spin);
+    col->addWidget(row);
 }
 
-void DevelopPanel::bindSlider(QGridLayout* grid, const QString& label, float min, float max,
+void DevelopPanel::bindSlider(QVBoxLayout* col, const QString& label, float min, float max,
                               float scale, Getter getter, Setter setter,
                               const QString& historyLabel, const QGradientStops& gradient) {
     // Now identical to bindFloat but with 0 decimals, so dense sections (HSL,
     // Calibration) also get an editable number beside the colored bar.
-    bindFloat(grid, label, min, max, 0, scale, std::move(getter), std::move(setter), historyLabel,
+    bindFloat(col, label, min, max, 0, scale, std::move(getter), std::move(setter), historyLabel,
               gradient);
 }
 

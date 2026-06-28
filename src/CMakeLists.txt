@@ -31,6 +31,7 @@ set(MYLR_AI_SOURCES
 
 set(MYLR_COLOR_SOURCES
     color/ColorManager.cpp
+    color/CameraProfile.cpp
 )
 
 set(MYLR_CATALOG_SOURCES
@@ -70,7 +71,7 @@ target_link_libraries(mylr_core PUBLIC Qt6::Core Qt6::Gui mylr_lut)
 
 add_library(mylr_raw STATIC ${MYLR_RAW_SOURCES})
 target_include_directories(mylr_raw PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(mylr_raw PUBLIC mylr_core Qt6::Core Qt6::Gui)
+target_link_libraries(mylr_raw PUBLIC mylr_core mylr_color Qt6::Core Qt6::Gui)
 if(MYLR_USE_LIBRAW AND (libraw_FOUND OR LibRaw_FOUND))
     if(TARGET libraw::raw)
         target_link_libraries(mylr_raw PUBLIC libraw::raw)
@@ -81,7 +82,7 @@ endif()
 
 add_library(mylr_render STATIC ${MYLR_RENDER_SOURCES})
 target_include_directories(mylr_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(mylr_render PUBLIC mylr_core mylr_lut Qt6::Core Qt6::Gui)
+target_link_libraries(mylr_render PUBLIC mylr_core mylr_lut mylr_color Qt6::Core Qt6::Gui)
 
 add_library(mylr_ai STATIC ${MYLR_AI_SOURCES})
 target_include_directories(mylr_ai PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

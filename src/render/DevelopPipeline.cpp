@@ -1,5 +1,9 @@
 #include "DevelopPipeline.hpp"
+#include "../color/CameraProfile.hpp"
+#include <cmath>
+#include <cstring>
 #include "../lut/LutEngine.hpp"
+#include <QDebug>
 #include <QTransform>
 #include <QtMath>
 #include <algorithm>
@@ -49,6 +53,10 @@ void ColorTransform::applyWhiteBalance(float&, float&, float&, float, float, con
 namespace {
 
 inline float clamp01(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
+inline float linFloor(float v) { return v < 0.f ? 0.f : v; }
+
+// Extended linear range before base-curve / sRGB encode (stops highlight posterization).
+constexpr float kHdrLinearMax = 4.0f;
 
 // Split [0,h) into row bands across the hardware threads and run f(y0, y1) on
 // each. Used to keep the full-resolution render fast (and the interactive render
@@ -82,31 +90,74 @@ inline float srgbToLin(float c) {
     return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
 }
 
-// Tunable constants (calibration phase tweaks these against Lightroom).
-constexpr float kBaseContrast = 0.20f;   // "Adobe Color" medium-contrast S strength
+// Tunable constants (calibrated against Lightroom Classic 8.3.1 / TORBOSHI1).
+constexpr float kBaseContrast = 0.26f;   // Adobe Color medium-contrast S strength
 constexpr float kHiStrength = 0.45f;
-constexpr float kShStrength = 0.45f;
+constexpr float kShStrength = 0.44f;
 constexpr float kWhStrength = 0.32f;
 constexpr float kBlStrength = 0.32f;
+constexpr float kParametricStrength = 1.f / 230.f;  // parametric curve divisor
 
-// --- Stage: scene-referred white balance (linear) --------------------------
-// wb[] are the as-shot cam_mul normalized to green; this neutralizes the image.
-// Temp/Tint are then applied as relative offsets around the 6500K neutral point.
-void applyWhiteBalanceLinear(float& r, float& g, float& b, const float wb[4], float temp,
-                             float tint) {
-    r *= (wb[0] > 0.f ? wb[0] : 1.f);
-    g *= (wb[1] > 0.f ? wb[1] : 1.f);
-    b *= (wb[2] > 0.f ? wb[2] : 1.f);
-
+// Kelvin/tint multipliers for absolute white-balance mapping.
+void kelvinTintGains(float temp, float tint, float& rMul, float& gMul, float& bMul) {
     const float ref = 6500.f;
     const float t = qBound(2000.f, temp, 12000.f);
-    const float ratio = ref / t;                 // >1 when cooler than neutral
-    const float redGain = std::pow(ratio, -0.5f); // lower temp -> less red
-    const float blueGain = std::pow(ratio, 0.5f);  // lower temp -> more blue
-    const float greenGain = 1.f - tint * 0.0015f;  // +tint = magenta (less green)
-    r *= redGain;
-    g *= greenGain;
-    b *= blueGain;
+    const float ratio = ref / t;
+    rMul = std::pow(ratio, -0.52f);
+    gMul = 1.f - tint * 0.0015f;
+    bMul = std::pow(ratio, 0.52f);
+}
+
+// Estimate as-shot color temperature from green-normalized cam_mul coefficients.
+float estimateAsShotTemp(const float wb[4]) {
+    const float r = wb[0] > 0.f ? wb[0] : 1.f;
+    const float b = wb[2] > 0.f ? wb[2] : 1.f;
+    const float temp = 6500.f * std::pow(b / r, 0.55f);
+    return qBound(2000.f, temp, 12000.f);
+}
+
+// --- Stage: scene-referred white balance (linear) --------------------------
+// Step A: apply as-shot cam_mul. Step B: at 6500K/0, done. Step C: absolute Temp/Tint
+// relative to estimated as-shot illuminant (Lightroom-compatible preset semantics).
+void applyWhiteBalanceLinear(float& r, float& g, float& b, const float wb[4], float temp,
+                             float tint) {
+    const float wr = wb[0] > 0.f ? wb[0] : 1.f;
+    const float wg = wb[1] > 0.f ? wb[1] : 1.f;
+    const float wbb = wb[2] > 0.f ? wb[2] : 1.f;
+    r *= wr;
+    g *= wg;
+    b *= wbb;
+
+    if (std::fabs(temp - 6500.f) < 0.5f && std::fabs(tint) < 0.05f)
+        return;
+
+    float rAs, gAs, bAs, rT, gT, bT;
+    const float asShotTemp = estimateAsShotTemp(wb);
+    kelvinTintGains(asShotTemp, 0.f, rAs, gAs, bAs);
+    kelvinTintGains(temp, tint, rT, gT, bT);
+    r *= rT / rAs;
+    g *= gT / gAs;
+    b *= bT / bAs;
+}
+
+// --- Stage: linear contrast (pivot ~18% gray) ------------------------------
+void applyContrastLinear(float& r, float& g, float& b, float contrast) {
+    if (contrast == 0.f) return;
+    const float c = 1.f + contrast / 100.f;
+    constexpr float pivot = 0.18f;
+    r = pivot + (r - pivot) * c;
+    g = pivot + (g - pivot) * c;
+    b = pivot + (b - pivot) * c;
+}
+
+// Soft-limit perceptual tone position to [0,1] without hard posterization.
+inline float softClampPos(float pos) {
+    if (pos <= 0.f) return 0.f;
+    if (pos >= 1.f) {
+        const float t = pos - 1.f;
+        return 1.f - 1.f / (1.f + t * 2.f);
+    }
+    return pos;
 }
 
 // --- Stage: PV2012-style tone mapping on luminance -------------------------
@@ -117,7 +168,17 @@ void applyToneMapping(float& r, float& g, float& b, const BasicSettings& s) {
         return;
     const float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
     if (lum <= 1e-5f) return;
-    const float pos = linToSrgb(clamp01(lum));
+    // Map linear luminance to perceptual position; allow HDR lum > 1 without hard clip.
+    float pos;
+    if (lum <= 1.f)
+        pos = linToSrgb(lum);
+    else {
+        const float sdr1 = linToSrgb(1.f);
+        const float t = (lum - 1.f) / (kHdrLinearMax - 1.f);
+        const float shoulder = t / (1.f + t);
+        pos = sdr1 + (1.f - sdr1) * shoulder * 2.f;
+    }
+    pos = softClampPos(pos);
 
     const float hiW = smoothstep(0.5f, 0.85f, pos);
     const float shW = 1.f - smoothstep(0.15f, 0.5f, pos);
@@ -129,7 +190,7 @@ void applyToneMapping(float& r, float& g, float& b, const BasicSettings& s) {
     np += (s.shadows / 100.f) * kShStrength * shW;
     np += (s.whites / 100.f) * kWhStrength * whW;
     np += (s.blacks / 100.f) * kBlStrength * blW;
-    np = clamp01(np);
+    np = softClampPos(np);
 
     const float newLum = srgbToLin(np);
     const float gain = newLum / lum;
@@ -138,9 +199,21 @@ void applyToneMapping(float& r, float& g, float& b, const BasicSettings& s) {
     b *= gain;
 }
 
-// --- Stage: Adobe Color base curve (linear -> display 0..1) ----------------
+// --- Stage: Adobe Color base curve (HDR linear -> display 0..1) ------------
 inline float baseCurveChannel(float lin) {
-    float sdr = linToSrgb(lin < 0.f ? 0.f : lin);
+    if (lin <= 0.f) return 0.f;
+    float sdr;
+    if (lin <= 1.f) {
+        sdr = lin <= 0.0031308f ? lin * 12.92f
+                                : 1.055f * std::pow(lin, 1.f / 2.4f) - 0.055f;
+    } else {
+        // Soft shoulder compresses [1, kHdrLinearMax] into display space below 1.0.
+        const float sdr1 = linToSrgb(1.f);
+        const float t = (lin - 1.f) / (kHdrLinearMax - 1.f);
+        const float shoulder = t / (1.f + t);
+        sdr = sdr1 + (1.f - sdr1) * shoulder * 2.f;
+    }
+    sdr = clamp01(sdr);
     const float sc = smoothstep(0.f, 1.f, sdr);
     return clamp01(sdr + (sc - sdr) * kBaseContrast);
 }
@@ -156,10 +229,17 @@ inline float applyContrast(float v, float contrast) {
 float evalToneCurve(float v, const ToneCurveSettings& curve) {
     v = clamp01(v);
     if (curve.mode == ToneCurveSettings::Mode::Parametric) {
-        if (v > 0.75f) v += curve.highlights / 300.f * (v - 0.75f);
-        else if (v > 0.5f) v += curve.lights / 300.f * (v - 0.5f);
-        else if (v > 0.25f) v += curve.darks / 300.f * (v - 0.25f);
-        else v += curve.shadows / 300.f * v;
+        const float sh = curve.shadowSplit / 100.f;
+        const float mid = curve.midtoneSplit / 100.f;
+        const float hi = curve.highlightSplit / 100.f;
+        if (v > hi)
+            v += curve.highlights * kParametricStrength * (v - hi);
+        else if (v > mid)
+            v += curve.lights * kParametricStrength * (v - mid);
+        else if (v > sh)
+            v += curve.darks * kParametricStrength * (v - sh);
+        else
+            v += curve.shadows * kParametricStrength * v;
         return clamp01(v);
     }
     const float x = v * 255.f;
@@ -348,7 +428,7 @@ void applyPresenceLinear(std::vector<float>& buf, int w, int h, const BasicSetti
             if (cAmt != 0.f) v += (v - coarse[i]) * cAmt;
             if (dAmt != 0.f) v += (v - coarse[i]) * dAmt * 1.5f;
         }
-        buf[i] = v < 0.f ? 0.f : v;
+        buf[i] = linFloor(v);
     }
 }
 
@@ -508,8 +588,12 @@ void applyVignette8(QImage& img, const EffectsSettings& effects) {
 // Pipeline orchestration
 // ---------------------------------------------------------------------------
 QImage DevelopPipeline::renderLinear(const QImage& linear64, const DevelopSettings& settings,
-                                     const float wbCoeffs[4], int maxEdge) const {
+                                     const float wbCoeffs[4], const float rgbCam[9],
+                                     int maxEdge, bool isCameraLinear) const {
     if (linear64.isNull()) return {};
+
+    qDebug() << "DevelopPipeline::renderLinear isCameraLinear=" << isCameraLinear
+             << "matrix sum=" << CameraProfile::matrixSum(rgbCam);
 
     // 1. Geometry: crop / rotate (done on the 16-bit linear buffer).
     QImage work = applyCropRotate(linear64, settings.geometry);
@@ -541,17 +625,35 @@ QImage DevelopPipeline::renderLinear(const QImage& linear64, const DevelopSettin
     const BasicSettings& basic = settings.basic;
     const float expGain = std::pow(2.f, basic.exposure);
     const float wb[4] = {wbCoeffs[0], wbCoeffs[1], wbCoeffs[2], wbCoeffs[3]};
+    float effectiveRgbCam[9];
+    if (isCameraLinear) {
+        CameraProfile::resolveForRender(rgbCam, effectiveRgbCam);
+    } else {
+        static const float kIdentity[9] = {1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f};
+        std::memcpy(effectiveRgbCam, kIdentity, sizeof(kIdentity));
+    }
+    qDebug() << "DevelopPipeline effective matrix sum="
+             << CameraProfile::matrixSum(effectiveRgbCam);
 
-    // 3-5. White balance -> Exposure -> Tone mapping (all in linear light).
+    // 3-5. White balance -> camera matrix -> underflow guard -> exposure/contrast/tone.
     parallelFor(h, [&](int y0, int y1) {
         for (int y = y0; y < y1; ++y) {
             for (int x = 0; x < w; ++x) {
                 const size_t o = (static_cast<size_t>(y) * w + x) * 3;
                 float r = buf[o], g = buf[o + 1], b = buf[o + 2];
                 applyWhiteBalanceLinear(r, g, b, wb, basic.temp, basic.tint);
-                r *= expGain; g *= expGain; b *= expGain;
+                CameraProfile::applyLinear(r, g, b, effectiveRgbCam);
+                r = std::max(0.f, r);
+                g = std::max(0.f, g);
+                b = std::max(0.f, b);
+                r *= expGain;
+                g *= expGain;
+                b *= expGain;
+                applyContrastLinear(r, g, b, basic.contrast);
                 applyToneMapping(r, g, b, basic);
-                buf[o] = r; buf[o + 1] = g; buf[o + 2] = b;
+                buf[o] = linFloor(r);
+                buf[o + 1] = linFloor(g);
+                buf[o + 2] = linFloor(b);
             }
         }
     });
@@ -559,27 +661,40 @@ QImage DevelopPipeline::renderLinear(const QImage& linear64, const DevelopSettin
     // 6. Presence (Texture / Clarity / Dehaze) in linear, before the base curve.
     applyPresenceLinear(buf, w, h, basic);
 
-    // 7-end. Base curve -> contrast -> tone curve -> HSL -> color grading ->
-    // calibration -> LUT -> vibrance/saturation, then encode to 8-bit sRGB.
+    // 7-end. Base curve -> tone curve -> HSL -> color grading -> calibration ->
+    // LUT -> vibrance/saturation, then encode to 8-bit sRGB.
     QImage out(w, h, QImage::Format_RGB32);
     LutEngine lutEngine;
     Lut3D lut;
     const bool useLut = settings.lut.enabled && !settings.lut.path.isEmpty() &&
                         lutEngine.loadFromPath(settings.lut.path, lut) && lut.valid;
 
-    // Precompute a combined 1D LUT for the per-channel scalar chain
-    // (base curve -> contrast -> tone curve). Input is clamped linear [0,1].
-    constexpr int kLutN = 4096;
+    // Precompute 1D LUT: base curve -> tone curve over extended linear range.
+    constexpr int kLutN = 8192;
     std::vector<float> chanLut(kLutN);
     for (int i = 0; i < kLutN; ++i) {
-        float v = baseCurveChannel(static_cast<float>(i) / (kLutN - 1));
-        v = applyContrast(v, basic.contrast);
+        const float lin = (static_cast<float>(i) / (kLutN - 1)) * kHdrLinearMax;
+        float v = baseCurveChannel(lin);
         v = evalToneCurve(v, settings.toneCurve);
         chanLut[i] = v;
     }
-    auto curveLookup = [&](float lin) {
-        const int idx = static_cast<int>(clamp01(lin) * (kLutN - 1) + 0.5f);
-        return chanLut[idx];
+    auto curveLookup = [&](float lin) -> float {
+        if (lin < 0.f) lin = 0.f;
+        if (lin >= kHdrLinearMax)
+            return evalToneCurve(baseCurveChannel(lin), settings.toneCurve);
+        const float t = lin / kHdrLinearMax;
+        const float f = t * (kLutN - 1);
+        const int i0 = static_cast<int>(f);
+        const int i1 = qMin(i0 + 1, kLutN - 1);
+        const float frac = f - static_cast<float>(i0);
+        return chanLut[i0] * (1.f - frac) + chanLut[i1] * frac;
+    };
+
+    auto encodeChannel = [&](float v, int x, int y, int ch) -> int {
+        const quint32 seed = 0x12345678u ^ static_cast<quint32>(y * w + x) * 0x9e3779b9u ^
+                             static_cast<quint32>(ch) * 0x85ebca6bu;
+        const float d = (static_cast<float>((seed >> 8) & 0xff) / 255.f - 0.5f) / 255.f;
+        return static_cast<int>(clamp01(v + d) * 255.f + 0.5f);
     };
 
     parallelFor(h, [&](int y0, int y1) {
@@ -610,9 +725,8 @@ QImage DevelopPipeline::renderLinear(const QImage& linear64, const DevelopSettin
                 }
 
                 applyVibranceSaturation(r, g, b, basic);
-                dst[x] = qRgb(static_cast<int>(clamp01(r) * 255.f + 0.5f),
-                              static_cast<int>(clamp01(g) * 255.f + 0.5f),
-                              static_cast<int>(clamp01(b) * 255.f + 0.5f));
+                dst[x] = qRgb(encodeChannel(r, x, y, 0), encodeChannel(g, x, y, 1),
+                              encodeChannel(b, x, y, 2));
             }
         }
     });
@@ -628,9 +742,9 @@ QImage DevelopPipeline::render(const QImage& source, const DevelopSettings& sett
                                int maxEdge) const {
     if (source.isNull()) return {};
     const float neutral[4] = {1.f, 1.f, 1.f, 1.f};
+    static const float kIdentityRgbCam[9] = {1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f};
     if (source.format() == QImage::Format_RGBX64) {
-        // Already-white-balanced linear source (e.g. non-RAW path): neutral WB.
-        return renderLinear(source, settings, neutral, maxEdge);
+        return renderLinear(source, settings, neutral, kIdentityRgbCam, maxEdge, false);
     }
     // 8-bit sRGB input: linearize into RGBX64 first.
     const QImage srgb = source.convertToFormat(QImage::Format_RGB888);
@@ -645,7 +759,7 @@ QImage DevelopPipeline::render(const QImage& source, const DevelopSettings& sett
             d[x * 4 + 3] = 0xffff;
         }
     }
-    return renderLinear(lin, settings, neutral, maxEdge);
+    return renderLinear(lin, settings, neutral, kIdentityRgbCam, maxEdge, false);
 }
 
 HistogramData DevelopPipeline::computeHistogram(const QImage& imageIn) const {

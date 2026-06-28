@@ -16,6 +16,10 @@ struct RawMetadata {
     float focalLength = 0.f;
     float evBaseline = 0.f;
     float wbCoeffs[4] = {1.f, 1.f, 1.f, 1.f};
+    float rgbCam[9] = {1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f};
+    // True when linearRgb is camera-native (needs pipeline matrix). False for
+    // embedded-JPEG / sRGB fallbacks where matrix must not be applied.
+    bool isCameraLinear = true;
     int width = 0;
     int height = 0;
 };

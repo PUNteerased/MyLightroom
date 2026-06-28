@@ -42,6 +42,9 @@ struct ToneCurveSettings {
     float lights = 0.f;
     float darks = 0.f;
     float shadows = 0.f;
+    float shadowSplit = 25.f;
+    float midtoneSplit = 50.f;
+    float highlightSplit = 75.f;
     QVector<QPointF> points = {{0, 0}, {255, 255}};
     QString channel = QStringLiteral("rgb");
 };

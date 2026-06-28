@@ -100,7 +100,8 @@ All pixel work runs in a **16-bit linear float workspace** (`Format_RGBX64` → 
 
 ### RAW decode (`RawDecoder`)
 
-- LibRaw: **16-bit**, **linear gamma** (`gamm = 1`), **`no_auto_bright`**, **as-shot camera WB** (`use_camera_wb`).
+- LibRaw: **16-bit**, **linear gamma** (`gamm = 1`), **`no_auto_bright`**, **as-shot camera WB baked at decode** (`use_camera_wb = 1`).
+- Real **`cam_mul`** stored in `metadata.wbCoeffs` for Temp/Tint reference only (not re-applied when `wbAppliedAtDecode`).
 - Scene-referred linear stored in `RawImage.linearRgb`.
 - An 8-bit display **`preview`** (WB + sRGB) is kept for AI features and quick thumbnails.
 - Embedded thumbnails apply **LibRaw EXIF flip** for correct orientation in Library/filmstrip.
@@ -109,18 +110,18 @@ All pixel work runs in a **16-bit linear float workspace** (`Format_RGBX64` → 
 
 1. **Geometry** — crop, rotate, straighten  
 2. **Lens corrections** — manual distortion, chromatic aberration (sliders in `LensSettings`; no auto lens DB yet)  
-3. **White balance** — as-shot neutral baseline; **Temp / Tint** are relative offsets (6500 K / 0 = no change)  
-4. **Exposure & contrast** — linear gain (exposure in stops); contrast in display domain after base curve  
+3. **White balance** — as-shot baked at decode; **Temp / Tint** apply as absolute offset from estimated as-shot illuminant (6500 K / 0 = as-shot)  
+4. **Exposure & contrast** — linear gain (exposure in stops) and luminance-preserving contrast in linear space  
 5. **Tone mapping (PV2012-style)** — region masks for Highlights, Shadows, Whites, Blacks  
 6. **Presence** — Texture, Clarity, Dehaze (unsharp/box-blur in linear)  
-7. **Adobe Color base curve** — emulated medium-contrast S-curve + parametric/point tone curve  
+7. **Adobe Color base curve** — emulated medium-contrast S-curve, then parametric/point tone curve (with configurable split points 25/50/75)  
 8. **HSL** — 8 hue bands  
 9. **Color Grading** — 3-way wheels (balance / blending)  
 10. **Camera Calibration** — shadow tint, RGB primaries  
 11. **3D LUT** — `.cube` / `.3dl` with intensity  
 12. **Vibrance / Saturation** — skin-tone–protected vibrance  
 13. **Effects & detail** — vignette, grain, sharpen, noise reduction  
-14. **Encode** — linear → sRGB; histogram computed on final 8-bit image  
+14. **Encode** — linear → sRGB with ordered dither; histogram computed on final 8-bit image  
 
 Entry point: `DevelopPipeline::renderLinear(linear64, settings, wbCoeffs, maxEdge)`.
 
@@ -169,8 +170,8 @@ Related helpers: **Auto Tone**, **Auto Exposure**, **Auto White Balance**, **Mat
 
 | Layer | Implementation |
 |-------|----------------|
-| **SSD thumbnail cache** | `ThumbnailCache` — MD5 key (`v3\|path\|size\|mtime`), JPEG on disk under app cache |
-| **RAM decoded-image cache** | `ImageCache` — LRU of `RawImage` (count + byte budget, default ~4 GB cap) |
+| **SSD thumbnail cache** | `ThumbnailCache` — MD5 key (`v7\|path\|size\|mtime`), JPEG on disk under app cache |
+| **RAM decoded-image cache** | `ImageCache` — LRU keyed by `decode-v3\|path\|size\|mtime` (count + byte budget, default ~4 GB cap) |
 | **Catalog DB** | SQLite — folders, metadata, ratings, collections, match profiles |
 
 Sidecar path pattern: `{filename}.cr2.mylr` (JSON) next to each RAW.

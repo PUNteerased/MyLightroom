@@ -31,9 +31,12 @@ class DevelopPipeline {
 public:
     // Primary entry point: process a 16-bit scene-referred linear source
     // (Format_RGBX64) through the full Lightroom-style pipeline and return an
-    // 8-bit sRGB display image. wbCoeffs are the as-shot cam_mul (green-normalized).
+    // 8-bit sRGB display image. wbCoeffs are as-shot cam_mul (green-normalized);
+    // rgbCam is the luminance-normalized camera-to-Rec.709 matrix from LibRaw.
+    // isCameraLinear=false for embedded-JPEG fallbacks (skip matrix/WB cam_mul path).
     QImage renderLinear(const QImage& linear64, const DevelopSettings& settings,
-                        const float wbCoeffs[4], int maxEdge = 0) const;
+                        const float wbCoeffs[4], const float rgbCam[9],
+                        int maxEdge = 0, bool isCameraLinear = true) const;
 
     // Backward-compatible entry: accepts either an RGBX64 linear image (treated as
     // already-white-balanced, neutral coeffs) or an 8-bit sRGB image (linearized

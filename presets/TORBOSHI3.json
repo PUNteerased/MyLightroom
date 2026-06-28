@@ -110,7 +110,7 @@
             "darks": 20,
             "highlights": 0,
             "lights": 10,
-            "mode": "point",
+            "mode": "parametric",
             "points": [
                 [
                     0,

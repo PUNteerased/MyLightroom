@@ -68,6 +68,9 @@ QJsonObject SidecarIO::settingsToJson(const DevelopSettings& s) {
     curve[QStringLiteral("lights")] = s.toneCurve.lights;
     curve[QStringLiteral("darks")] = s.toneCurve.darks;
     curve[QStringLiteral("shadows")] = s.toneCurve.shadows;
+    curve[QStringLiteral("shadow_split")] = s.toneCurve.shadowSplit;
+    curve[QStringLiteral("midtone_split")] = s.toneCurve.midtoneSplit;
+    curve[QStringLiteral("highlight_split")] = s.toneCurve.highlightSplit;
     QJsonArray pts;
     for (const auto& p : s.toneCurve.points) {
         QJsonArray pt;
@@ -147,6 +150,12 @@ DevelopSettings SidecarIO::settingsFromJson(const QJsonObject& root) {
     s.toneCurve.lights = static_cast<float>(curve.value(QStringLiteral("lights")).toDouble());
     s.toneCurve.darks = static_cast<float>(curve.value(QStringLiteral("darks")).toDouble());
     s.toneCurve.shadows = static_cast<float>(curve.value(QStringLiteral("shadows")).toDouble());
+    s.toneCurve.shadowSplit =
+        static_cast<float>(curve.value(QStringLiteral("shadow_split")).toDouble(25));
+    s.toneCurve.midtoneSplit =
+        static_cast<float>(curve.value(QStringLiteral("midtone_split")).toDouble(50));
+    s.toneCurve.highlightSplit =
+        static_cast<float>(curve.value(QStringLiteral("highlight_split")).toDouble(75));
     s.toneCurve.points.clear();
     for (const auto& v : curve.value(QStringLiteral("points")).toArray()) {
         const QJsonArray pt = v.toArray();
@@ -155,6 +164,14 @@ DevelopSettings SidecarIO::settingsFromJson(const QJsonObject& root) {
     }
     if (s.toneCurve.points.isEmpty())
         s.toneCurve.points = {{0, 0}, {255, 255}};
+
+    const bool hasParametric = s.toneCurve.darks != 0.f || s.toneCurve.lights != 0.f ||
+                               s.toneCurve.highlights != 0.f || s.toneCurve.shadows != 0.f;
+    const bool identityPoint =
+        s.toneCurve.points.size() == 2 && s.toneCurve.points[0] == QPointF(0, 0) &&
+        s.toneCurve.points[1] == QPointF(255, 255);
+    if (hasParametric && identityPoint)
+        s.toneCurve.mode = ToneCurveSettings::Mode::Parametric;
 
     static const char* bandNames[] = {"red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta"};
     const QJsonObject hsl = root.value(QStringLiteral("hsl")).toObject();

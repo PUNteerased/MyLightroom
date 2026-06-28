@@ -14,9 +14,12 @@
 namespace mylr {
 
 DocumentController::DocumentController(QObject* parent) : QObject(parent) {
-    const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    const QString cacheRoot = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    const QString cache = QDir(cacheRoot).filePath(QStringLiteral("cache_v99_forced"));
+    QDir().mkpath(cache);
     m_catalog.setCachePath(cache);
     m_thumbCache.setDirectory(QDir(cache).filePath(QStringLiteral("thumbnails")));
+    m_imageCache.clear();
     m_presetManager.loadDirectory(QStringLiteral("presets"));
     QDir().mkpath(QStringLiteral("presets/luts"));
 
@@ -99,7 +102,8 @@ void DocumentController::applyMatchToAllAsync(const QVector<int>& indices) {
         SidecarIO::save(path, r.settings, nullptr);
         DevelopPipeline pipeline;
         item.thumbnail = pipeline.renderLinear(raw.linearRgb, r.settings,
-                                               raw.metadata.wbCoeffs, 256);
+                                               raw.metadata.wbCoeffs, raw.metadata.rgbCam, 256,
+                                               raw.metadata.isCameraLinear);
         item.confidence = r.confidence;
         return item;
     };
@@ -140,11 +144,15 @@ bool DocumentController::loadImage(int index) {
     m_currentIndex = index;
     const QString path = m_paths[index];
 
-    if (!m_imageCache.get(path, m_raw) || !m_raw.valid) {
-        m_raw = m_decoder.decode(path, 2048);
-        if (m_raw.valid)
-            m_imageCache.put(path, m_raw);
-    }
+    // Never reuse stale canvas or cached decode while validating the color pipeline.
+    m_rendered = QImage();
+    m_beforeRender = QImage();
+    m_beforeComputed = false;
+
+    const QString cacheKey = ImageCache::cacheKey(path);
+    m_raw = m_decoder.decode(path, 2048);
+    if (m_raw.valid)
+        m_imageCache.put(cacheKey, m_raw);
     if (!m_raw.valid) {
         emit errorOccurred(QStringLiteral("Failed to decode: %1").arg(path));
         return false;
@@ -175,6 +183,13 @@ bool DocumentController::loadImage(int index) {
     m_sceneType.clear();
     m_sceneComputed = false;
 
+    // Synchronous unified-pipeline render for the canvas (never raw.preview / embedded thumb).
+    m_rendered = m_pipeline.renderLinear(m_raw.linearRgb, m_editGraph.current(),
+                                         m_raw.metadata.wbCoeffs, m_raw.metadata.rgbCam,
+                                         m_previewMaxEdge, m_raw.metadata.isCameraLinear);
+    m_previewInteractive = false;
+    emit previewUpdated();
+
     refreshPreview();
     emit imageLoaded(index);
     return true;
@@ -183,7 +198,8 @@ bool DocumentController::loadImage(int index) {
 QImage DocumentController::beforePreview() {
     if (!m_beforeComputed && m_raw.valid) {
         m_beforeRender = m_pipeline.renderLinear(m_raw.linearRgb, DevelopSettings::defaults(),
-                                                 m_raw.metadata.wbCoeffs);
+                                                 m_raw.metadata.wbCoeffs, m_raw.metadata.rgbCam, 0,
+                                                 m_raw.metadata.isCameraLinear);
         m_beforeComputed = true;
     }
     return m_beforeRender;
@@ -213,9 +229,16 @@ void DocumentController::startAsyncRender(quint64) {
     const int maxEdge = m_previewMaxEdge;
     const std::array<float, 4> wb{m_raw.metadata.wbCoeffs[0], m_raw.metadata.wbCoeffs[1],
                                   m_raw.metadata.wbCoeffs[2], m_raw.metadata.wbCoeffs[3]};
-    QFuture<QImage> future = QtConcurrent::run([source, settings, maxEdge, wb]() {
+    const std::array<float, 9> rgbCam{m_raw.metadata.rgbCam[0], m_raw.metadata.rgbCam[1],
+                                      m_raw.metadata.rgbCam[2], m_raw.metadata.rgbCam[3],
+                                      m_raw.metadata.rgbCam[4], m_raw.metadata.rgbCam[5],
+                                      m_raw.metadata.rgbCam[6], m_raw.metadata.rgbCam[7],
+                                      m_raw.metadata.rgbCam[8]};
+    const bool isCameraLinear = m_raw.metadata.isCameraLinear;
+    QFuture<QImage> future = QtConcurrent::run([source, settings, maxEdge, wb, rgbCam, isCameraLinear]() {
         DevelopPipeline pipeline;
-        return pipeline.renderLinear(source, settings, wb.data(), maxEdge);
+        return pipeline.renderLinear(source, settings, wb.data(), rgbCam.data(), maxEdge,
+                                     isCameraLinear);
     });
     m_renderWatcher.setFuture(future);
 }
@@ -242,7 +265,8 @@ void DocumentController::renderInteractiveNow() {
     m_interactiveDirty = false;
     // Fast low-resolution render for responsive slider dragging...
     m_rendered = m_pipeline.renderLinear(m_interactiveSource, m_editGraph.current(),
-                                         m_raw.metadata.wbCoeffs);
+                                         m_raw.metadata.wbCoeffs, m_raw.metadata.rgbCam, 0,
+                                         m_raw.metadata.isCameraLinear);
     m_previewInteractive = true;
     emit previewUpdated();
     // ...then a full-resolution render once the user pauses.
@@ -280,7 +304,8 @@ bool DocumentController::setAsReferencePhoto(int index) {
     // previous image. Render the current settings synchronously here so the
     // captured reference reflects exactly this image.
     m_rendered = m_pipeline.renderLinear(m_raw.linearRgb, m_editGraph.current(),
-                                         m_raw.metadata.wbCoeffs);
+                                         m_raw.metadata.wbCoeffs, m_raw.metadata.rgbCam, 0,
+                                         m_raw.metadata.isCameraLinear);
     const MatchProfile profile = saveReferenceProfile();
     if (profile.referenceImageId.isEmpty()) return false;
     emit referencePhotoSet(index, m_referenceImage);
@@ -397,7 +422,8 @@ bool DocumentController::exportCurrent(const ExportSettings& settings, const QSt
     if (!m_raw.valid) return false;
     ExportEngine engine;
     return engine.exportImage(m_raw.linearRgb, m_editGraph.current(), settings, outputPath,
-                              m_raw.metadata.wbCoeffs);
+                              m_raw.metadata.wbCoeffs, m_raw.metadata.rgbCam,
+                              m_raw.metadata.isCameraLinear);
 }
 
 bool DocumentController::exportBatch(const ExportSettings& settings) {
@@ -422,7 +448,8 @@ bool DocumentController::exportBatch(const ExportSettings& settings) {
         const QString out = QDir(settings.outputDir).filePath(
             base + QStringLiteral(".") + settings.format);
         if (!engine.exportImage(raw.linearRgb, develop, perImageSettings, out,
-                                raw.metadata.wbCoeffs))
+                                raw.metadata.wbCoeffs, raw.metadata.rgbCam,
+                                raw.metadata.isCameraLinear))
             allOk = false;
     }
     return allOk;
@@ -431,7 +458,12 @@ bool DocumentController::exportBatch(const ExportSettings& settings) {
 QImage DocumentController::thumbnailForPath(const QString& path) const {
     QImage cached = m_thumbCache.load(path, 256);
     if (!cached.isNull()) return cached;
-    QImage thumb = m_decoder.decodeQuickPreview(path, 256);
+    RawImage raw = m_decoder.decode(path, 512);
+    if (!raw.valid) return {};
+    DevelopPipeline pipeline;
+    QImage thumb = pipeline.renderLinear(raw.linearRgb, DevelopSettings::defaults(),
+                                         raw.metadata.wbCoeffs, raw.metadata.rgbCam, 256,
+                                         raw.metadata.isCameraLinear);
     if (!thumb.isNull())
         m_thumbCache.store(path, 256, thumb);
     return thumb;
